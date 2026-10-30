@@ -1,1011 +1,384 @@
-import streamlit as st
-import joblib
-import re
-import nltk
+from __future__ import annotations
+
 import json
-import os
-import pandas as pd
-import matplotlib.pyplot as plt
+import re
+from datetime import datetime
 from pathlib import Path
 
-from nltk.corpus import stopwords
+import joblib
+import matplotlib.pyplot as plt
+import pandas as pd
+import streamlit as st
 
+try:
+    from nltk.corpus import stopwords
 
-# =========================================================
-# PAGE CONFIG
-# =========================================================
+    STOP_WORDS = set(stopwords.words("english"))
+except (ImportError, LookupError):
+    # Keeps the app usable on a fresh/offline deployment. Install the NLTK
+    # stopwords corpus to match the training pre-processing exactly.
+    STOP_WORDS = {
+        "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any", "are", "as", "at",
+        "be", "because", "been", "before", "being", "below", "between", "both", "but", "by", "could", "did", "do",
+        "does", "doing", "down", "during", "each", "few", "for", "from", "further", "had", "has", "have", "having",
+        "he", "her", "here", "hers", "herself", "him", "himself", "his", "how", "i", "if", "in", "into", "is", "it",
+        "its", "itself", "just", "me", "more", "most", "my", "myself", "no", "nor", "not", "now", "of", "off", "on",
+        "once", "only", "or", "other", "our", "ours", "ourselves", "out", "over", "own", "same", "she", "should",
+        "so", "some", "such", "than", "that", "the", "their", "theirs", "them", "themselves", "then", "there",
+        "these", "they", "this", "those", "through", "to", "too", "under", "until", "up", "very", "was", "we", "were",
+        "what", "when", "where", "which", "while", "who", "whom", "why", "will", "with", "would", "you", "your",
+        "yours", "yourself", "yourselves",
+    }
 
-st.set_page_config(
-    page_title="Fake News AI Detector",
-    page_icon="📰",
-    layout="wide"
-)
-
-
-# =========================================================
-# CSS
-# =========================================================
-
-st.markdown("""
-<style>
-
-.stApp {
-    background-color: #0e1117;
-}
-
-.block-container {
-    max-width: 1200px;
-    padding-top: 2rem;
-}
-
-.main-title {
-    font-size: 45px;
-    font-weight: 800;
-    text-align: center;
-}
-
-.subtitle {
-    text-align: center;
-    color: #9aa4b2;
-    font-size: 18px;
-    margin-bottom: 30px;
-}
-
-.card {
-    background-color: #161b22;
-    border: 1px solid #30363d;
-    border-radius: 16px;
-    padding: 25px;
-    margin-bottom: 20px;
-}
-
-.fake {
-    background-color: #3b171c;
-    border: 1px solid #8e2b35;
-    border-radius: 16px;
-    padding: 25px;
-    text-align: center;
-}
-
-.real {
-    background-color: #123524;
-    border: 1px solid #2d8a57;
-    border-radius: 16px;
-    padding: 25px;
-    text-align: center;
-}
-
-.result-title {
-    font-size: 30px;
-    font-weight: 800;
-}
-
-</style>
-""", unsafe_allow_html=True)
-
-
-# =========================================================
-# NLTK
-# =========================================================
-
-nltk.download(
-    "stopwords",
-    quiet=True
-)
-
-STOP_WORDS = set(
-    stopwords.words("english")
-)
-
-
-# =========================================================
-# FILE PATHS
-# =========================================================
 
 APP_DIR = Path(__file__).resolve().parent
 MODEL_PATH = APP_DIR / "model" / "fake_news_model.pkl"
 VECTORIZER_PATH = APP_DIR / "model" / "tfidf_vectorizer.pkl"
 METRICS_PATH = APP_DIR / "model" / "metrics.json"
 
+st.set_page_config(
+    page_title="FakeNewsTextClassifier",
+    page_icon="📰",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-# =========================================================
-# CHECK FILES
-# =========================================================
+st.markdown(
+    """
+    <style>
+    :root {
+        --ink: #EAF2F0;
+        --teal: #42C8B2;
+        --teal-dark: #168E82;
+        --coral: #FF9A76;
+        --line: #2C414A;
+        --paper: #101A21;
+    }
 
-if not os.path.exists(
-    MODEL_PATH
-):
+    .stApp {
+        color: var(--ink);
+        background:
+            radial-gradient(ellipse at 95% 0%, rgba(66, 200, 178, 0.13), transparent 38rem),
+            var(--paper);
+    }
 
-    st.error(
-        "Model not found. "
-        "Run python train_model.py"
-    )
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #14232B 0%, #101A21 100%);
+        border-right: 1px solid var(--line);
+    }
 
-    st.stop()
+    h1 {
+        color: #F4FAF8;
+        letter-spacing: -0.045em;
+    }
+
+    h2, h3 {
+        color: #BCECE3;
+        letter-spacing: -0.025em;
+    }
+
+    hr {
+        height: 1px;
+        border: 0;
+        background: linear-gradient(90deg, transparent, var(--teal), var(--coral), transparent);
+    }
+
+    .stButton > button {
+        border-radius: 12px;
+        transition: transform 160ms ease, box-shadow 160ms ease, background-color 160ms ease;
+    }
+
+    .stButton > button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 7px 18px rgba(20, 55, 58, 0.14);
+    }
+
+    .stButton > button[kind="primary"] {
+        background: linear-gradient(135deg, var(--teal-dark), #126F69);
+        border-color: var(--teal);
+        color: #FFFFFF;
+    }
+
+    div[data-testid="stMetric"] {
+        background: linear-gradient(145deg, #1A2B33, #15242C);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        box-shadow: 0 3px 14px rgba(0, 0, 0, 0.16);
+        transition: transform 180ms ease, box-shadow 180ms ease;
+    }
+
+    div[data-testid="stMetric"]:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.28);
+    }
+
+    div[data-testid="stTextInput"] input:focus,
+    div[data-testid="stTextArea"] textarea:focus {
+        border-color: var(--teal);
+        box-shadow: 0 0 0 3px rgba(66, 200, 178, 0.20);
+    }
+
+    [data-testid="stRadio"] label {
+        border-radius: 10px;
+        transition: background-color 150ms ease, color 150ms ease;
+    }
+
+    [data-testid="stRadio"] label:hover {
+        color: var(--teal-dark);
+        background: rgba(66, 200, 178, 0.10);
+    }
+
+    main .block-container {
+        animation: page-arrive 380ms ease-out both;
+    }
+
+    @keyframes page-arrive {
+        from { opacity: 0; transform: translateY(7px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after {
+            animation-duration: 0.01ms !important;
+            animation-iteration-count: 1 !important;
+            scroll-behavior: auto !important;
+            transition-duration: 0.01ms !important;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
-if not os.path.exists(
-    VECTORIZER_PATH
-):
+def clean_text(text: str) -> str:
+    text = str(text).lower()
+    text = re.sub(r"http\S+|www\S+|https\S+", " ", text)
+    text = re.sub(r"[^a-zA-Z\s]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return " ".join(word for word in text.split() if word not in STOP_WORDS)
 
-    st.error(
-        "TF-IDF vectorizer not found."
-    )
-
-    st.stop()
-
-
-if not os.path.exists(
-    METRICS_PATH
-):
-
-    st.error(
-        "metrics.json not found."
-    )
-
-    st.stop()
-
-
-# =========================================================
-# LOAD MODEL
-# =========================================================
 
 @st.cache_resource
 def load_artifacts():
     return joblib.load(MODEL_PATH), joblib.load(VECTORIZER_PATH)
 
 
-model, vectorizer = load_artifacts()
-
-
-# =========================================================
-# LOAD METRICS
-# =========================================================
-
-with open(
-    METRICS_PATH,
-    "r"
-) as file:
-
-    metrics = json.load(file)
-
-
-# =========================================================
-# TEXT CLEANING
-# =========================================================
-
-def clean_text(text):
-
-    text = str(text).lower()
-
-    text = re.sub(
-        r"http\S+|www\S+|https\S+",
-        " ",
-        text
-    )
-
-    text = re.sub(
-        r"[^a-zA-Z\s]",
-        " ",
-        text
-    )
-
-    text = re.sub(
-        r"\s+",
-        " ",
-        text
-    ).strip()
-
-    words = [
-        word
-        for word in text.split()
-        if word not in STOP_WORDS
-    ]
-
-    return " ".join(words)
-
-
-# =========================================================
-# PROBABILITY
-# =========================================================
-
-def get_probability(
-    model,
-    vector
-):
-
-    if hasattr(
-        model,
-        "predict_proba"
-    ):
-
-        probabilities = (
-            model.predict_proba(
-                vector
-            )[0]
-        )
-
-        return (
-            probabilities[0],
-            probabilities[1]
-        )
-
-    else:
-
-        score = (
-            model.decision_function(
-                vector
-            )[0]
-        )
-
-        real_probability = (
-            1 /
-            (
-                1 +
-                pow(
-                    2.71828,
-                    -score
-                )
-            )
-        )
-
-        fake_probability = (
-            1 -
-            real_probability
-        )
-
-        return (
-            fake_probability,
-            real_probability
-        )
-
-
-# =========================================================
-# EXPLAIN PREDICTION
-# =========================================================
-
-def explain_prediction(
-    model,
-    vector
-):
-
-    if not hasattr(
-        model,
-        "coef_"
-    ):
-
+def explain_prediction(model, vector, vectorizer):
+    if not hasattr(model, "coef_"):
         return None
-
-    feature_names = (
-        vectorizer
-        .get_feature_names_out()
-    )
-
-    coefficients = (
-        model.coef_[0]
-    )
-
+    feature_names = vectorizer.get_feature_names_out()
+    coefficients = model.coef_[0]
     row = vector.tocoo()
-
-    explanations = []
-
-    for index, value in zip(
-        row.col,
-        row.data
-    ):
-
-        contribution = (
-            value *
-            coefficients[index]
-        )
-
-        explanations.append({
-
-            "Word / Phrase":
-                feature_names[index],
-
-            "Influence":
-                contribution
-
-        })
-
-    explanations.sort(
-        key=lambda x:
-        abs(x["Influence"]),
-        reverse=True
-    )
-
-    return explanations[:10]
+    items = [
+        {"Term": feature_names[index], "Influence": float(value * coefficients[index])}
+        for index, value in zip(row.col, row.data)
+    ]
+    items.sort(key=lambda item: abs(item["Influence"]), reverse=True)
+    return items[:8]
 
 
-# =========================================================
-# SESSION HISTORY
-# =========================================================
+missing = [path for path in (MODEL_PATH, VECTORIZER_PATH, METRICS_PATH) if not path.exists()]
+if missing:
+    st.error("The app is missing required model files: " + ", ".join(path.name for path in missing))
+    st.info("Run `python train_model.py` from the project folder to create the model artifacts.")
+    st.stop()
+
+try:
+    model, vectorizer = load_artifacts()
+    with METRICS_PATH.open("r", encoding="utf-8") as file:
+        metrics = json.load(file)
+except Exception as exc:
+    st.error(f"Could not load the model artifacts: {exc}")
+    st.stop()
 
 if "history" not in st.session_state:
-
     st.session_state.history = []
-
-
-# =========================================================
-# HEADER
-# =========================================================
-
-st.markdown(
-    '<div class="main-title">'
-    '📰 Fake News AI Detector'
-    '</div>',
-    unsafe_allow_html=True
-)
-
-st.markdown(
-    '<div class="subtitle">'
-    'AI-powered Fake News Classification using NLP'
-    '</div>',
-    unsafe_allow_html=True
-)
-
-
-# =========================================================
-# SIDEBAR
-# =========================================================
+if "last_result" not in st.session_state:
+    st.session_state.last_result = None
 
 with st.sidebar:
-
-    st.title(
-        "📰 Fake News AI"
+    st.markdown("### 📰 FakeNewsTextClassifier")
+    st.caption("NEWS TEXT ANALYSIS")
+    st.divider()
+    page_choice = st.radio(
+        "Workspace",
+        ["🧪  Detector", "📊  Overview", "📈  Performance", "🕘  History"],
+        label_visibility="collapsed",
     )
+    page = {
+        "🧪  Detector": "Detector",
+        "📊  Overview": "Overview",
+        "📈  Performance": "Model performance",
+        "🕘  History": "History",
+    }[page_choice]
+    st.divider()
+    st.caption("Powered by TF-IDF and scikit-learn")
 
-    page = st.radio(
-        "Navigation",
-        [
-            "🏠 Detector",
-            "📊 Dashboard",
-            "📈 Model Performance",
-            "🕒 Prediction History"
-        ]
-    )
+st.title("FakeNewsTextClassifier")
+st.caption("A text based screening tool for headlines and articles. Use its output as a starting point for research, not a fact check.")
 
-    st.markdown("---")
+if page == "Detector":
+    st.divider()
+    st.subheader("Analyze a news story")
+    st.write("Enter a headline, article, or both. Adding the full article gives the model more text to analyze.")
+    with st.form("analysis_form", clear_on_submit=False):
+        headline = st.text_input("Headline", placeholder="Paste the story headline", max_chars=500)
+        article = st.text_area("Article text", height=220, placeholder="Paste the article text here", max_chars=50000)
+        submitted = st.form_submit_button("Analyze story", type="primary", use_container_width=True)
 
-    st.write(
-        "### 🤖 Technologies"
-    )
-
-    st.write(
-        """
-        Python  
-        NLP  
-        TF-IDF  
-        Machine Learning  
-        Streamlit
-        """
-    )
-
-
-# =========================================================
-# DETECTOR
-# =========================================================
-
-if page == "🏠 Detector":
-
-    st.subheader(
-        "📰 Analyze News"
-    )
-
-    # -----------------------------------------------------
-    # SEPARATE HEADLINE
-    # -----------------------------------------------------
-
-    headline = st.text_input(
-        "📝 News Headline",
-        placeholder=
-        "Enter news headline..."
-    )
-
-
-    # -----------------------------------------------------
-    # SEPARATE ARTICLE
-    # -----------------------------------------------------
-
-    article = st.text_area(
-        "📄 News Article",
-        height=280,
-        placeholder=
-        "Paste the complete news article here..."
-    )
-
-
-    # -----------------------------------------------------
-    # BUTTON
-    # -----------------------------------------------------
-
-    analyze = st.button(
-        "🔍 Analyze News",
-        type="primary",
-        use_container_width=True
-    )
-
-
-    if analyze:
-
-        if not headline and not article:
-
-            st.warning(
-                "Please enter headline or article."
-            )
-
+    if submitted:
+        st.session_state.last_result = None
+        if not headline.strip() and not article.strip():
+            st.warning("Enter a headline or article before analyzing.")
         else:
-
-            combined_text = (
-                headline +
-                " " +
-                article
-            )
-
-            cleaned = clean_text(
-                combined_text
-            )
-
-            vector = vectorizer.transform(
-                [cleaned]
-            )
-
-
-            # -------------------------------------------------
-            # PREDICTION
-            # -------------------------------------------------
-
-            prediction = model.predict(
-                vector
-            )[0]
-
-
-            fake_prob, real_prob = (
-                get_probability(
-                    model,
-                    vector
-                )
-            )
-
-
-            fake_percent = (
-                fake_prob * 100
-            )
-
-            real_percent = (
-                real_prob * 100
-            )
-
-
-            confidence = max(
-                fake_percent,
-                real_percent
-            )
-
-
-            # -------------------------------------------------
-            # RESULT
-            # -------------------------------------------------
-
-            if prediction == 0:
-
-                st.markdown(
-                    """
-                    <div class="fake">
-
-                    <div class="result-title">
-                    ❌ FAKE NEWS
-                    </div>
-
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-
-                label = "FAKE"
-
+            cleaned = clean_text(f"{headline} {article}")
+            if not cleaned:
+                st.warning("There is not enough usable text to analyze. Try adding more of the story.")
             else:
+                vector = vectorizer.transform([cleaned])
+                if vector.nnz == 0:
+                    st.warning("The model did not recognize any words from its training vocabulary. Try adding more text or rephrasing it.")
+                else:
+                    prediction = int(model.predict(vector)[0])
+                    label = "REAL" if prediction == 1 else "FAKE"
+                    # LinearSVC decision scores are not calibrated probabilities.
+                    # Keep the output honest by describing score strength, not probability.
+                    decision_score = None
+                    if hasattr(model, "decision_function"):
+                        decision_score = float(model.decision_function(vector)[0])
+                    if hasattr(model, "predict_proba"):
+                        probabilities = model.predict_proba(vector)[0]
+                        class_order = list(model.classes_)
+                        confidence = float(probabilities[class_order.index(prediction)])
+                        score_label = "Model score"
+                        score_value = confidence * 100
+                        score_note = "The model's score is not a verified likelihood that the story is true or false."
+                    else:
+                        score_label = "Decision margin"
+                        score_value = abs(decision_score) if decision_score is not None else None
+                        score_note = "Margin shows distance from the model's boundary; it is not a probability."
+                    result = {
+                        "label": label,
+                        "headline": headline.strip() or "(No headline provided)",
+                        "score_label": score_label,
+                        "score_value": score_value,
+                        "score_note": score_note,
+                        "explanations": explain_prediction(model, vector, vectorizer),
+                        "time": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M"),
+                    }
+                    st.session_state.last_result = result
+                    st.session_state.history.insert(0, {
+                        "Time": result["time"],
+                        "Headline": result["headline"][:120],
+                        "Prediction": label,
+                        "Score type": score_label,
+                        "Score": (f"{score_value:.1f}%" if score_label == "Model score" else f"{score_value:.3f}") if score_value is not None else "—",
+                    })
+                    st.session_state.history = st.session_state.history[:100]
 
-                st.markdown(
-                    """
-                    <div class="real">
-
-                    <div class="result-title">
-                    ✅ REAL NEWS
-                    </div>
-
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
-
-                label = "REAL"
-
-
-            # -------------------------------------------------
-            # PROBABILITIES
-            # -------------------------------------------------
-
-            st.subheader(
-                "📊 Prediction Probability"
-            )
-
-            col1, col2, col3 = st.columns(3)
-
-            with col1:
-
-                st.metric(
-                    "❌ Fake",
-                    f"{fake_percent:.2f}%"
-                )
-
-            with col2:
-
-                st.metric(
-                    "✅ Real",
-                    f"{real_percent:.2f}%"
-                )
-
-            with col3:
-
-                st.metric(
-                    "🎯 Confidence",
-                    f"{confidence:.2f}%"
-                )
-
-
-            st.progress(
-                int(confidence)
-            )
-
-
-            # -------------------------------------------------
-            # WHY?
-            # -------------------------------------------------
-
-            st.markdown("---")
-
-            st.subheader(
-                "🧠 Why did the model classify it this way?"
-            )
-
-
-            explanations = (
-                explain_prediction(
-                    model,
-                    vector
-                )
-            )
-
-
-            if explanations:
-
-                explanation_df = (
-                    pd.DataFrame(
-                        explanations
-                    )
-                )
-
-                explanation_df[
-                    "Direction"
-                ] = explanation_df[
-                    "Influence"
-                ].apply(
-                    lambda x:
-                    "REAL" if x > 0
-                    else "FAKE"
-                )
-
-                explanation_df[
-                    "Influence"
-                ] = explanation_df[
-                    "Influence"
-                ].abs().round(4)
-
-                explanation_df = (
-                    explanation_df[
-                        [
-                            "Word / Phrase",
-                            "Direction",
-                            "Influence"
-                        ]
-                    ]
-                )
-
-                st.dataframe(
-                    explanation_df,
-                    use_container_width=True,
-                    hide_index=True
-                )
-
-                st.caption(
-                    "These words/features are influential "
-                    "according to the trained model. "
-                    "They are not factual proof."
-                )
-
+    result = st.session_state.last_result
+    if result:
+        if result["label"] == "FAKE":
+            st.error("The model flags this text as FAKE")
+        else:
+            st.success("The model flags this text as REAL")
+        st.caption("This label is based on text patterns learned from the training data. Verify the source and claims independently.")
+        left, right = st.columns([1, 2])
+        with left:
+            if result["score_value"] is not None:
+                st.metric(result["score_label"], f"{result['score_value']:.2f}" if result["score_label"] == "Decision margin" else f"{result['score_value']:.1f}%")
+            st.caption(result["score_note"])
+        with right:
+            st.markdown("**What influenced the label**")
+            if result["explanations"]:
+                explain_df = pd.DataFrame(result["explanations"])
+                explain_df["Direction"] = explain_df["Influence"].apply(lambda value: "Real" if value > 0 else "Fake")
+                explain_df["Strength"] = explain_df["Influence"].abs().round(4)
+                st.dataframe(explain_df[["Term", "Direction", "Strength"]], use_container_width=True, hide_index=True)
+                st.caption("These terms show model influence, not evidence that a claim is true or false.")
             else:
-
-                st.info(
-                    "Explanation is not available "
-                    "for this model."
-                )
-
-
-            # -------------------------------------------------
-            # HISTORY
-            # -------------------------------------------------
-
-            st.session_state.history.insert(
-                0,
-                {
-                    "Time":
-                        pd.Timestamp.now().strftime(
-                            "%Y-%m-%d %H:%M:%S"
-                        ),
-
-                    "Headline":
-                        headline[:100],
-
-                    "Prediction":
-                        label,
-
-                    "Confidence":
-                        f"{confidence:.2f}%"
-                }
-            )
-
-
-# =========================================================
-# DASHBOARD
-# =========================================================
-
-elif page == "📊 Dashboard":
-
-    st.title(
-        "📊 Model Dashboard"
-    )
-
-
-    best_model = metrics[
-        "best_model"
-    ]
-
-    best_accuracy = (
-        metrics[
-            "results"
-        ][
-            best_model
-        ][
-            "accuracy"
-        ] * 100
-    )
-
-
-    dataset = metrics[
-        "dataset"
-    ]
-
-
-    # -----------------------------------------------------
-    # METRICS
-    # -----------------------------------------------------
-
-    col1, col2, col3, col4 = (
-        st.columns(4)
-    )
-
-
-    with col1:
-
-        st.metric(
-            "🎯 Accuracy",
-            f"{best_accuracy:.2f}%"
-        )
-
-
-    with col2:
-
-        st.metric(
-            "🏆 Best Model",
-            best_model
-        )
-
-
-    with col3:
-
-        st.metric(
-            "❌ Fake Articles",
-            dataset[
-                "fake_articles"
-            ]
-        )
-
-
-    with col4:
-
-        st.metric(
-            "✅ Real Articles",
-            dataset[
-                "real_articles"
-            ]
-        )
-
-
-    st.markdown("---")
-
-    st.subheader(
-        "📚 Dataset"
-    )
-
-    st.write(
-        "Total Articles:",
-        dataset[
-            "total_articles"
-        ]
-    )
-
-    st.write(
-        "Training Articles:",
-        dataset[
-            "training_articles"
-        ]
-    )
-
-    st.write(
-        "Testing Articles:",
-        dataset[
-            "testing_articles"
-        ]
-    )
-
-
-# =========================================================
-# MODEL PERFORMANCE
-# =========================================================
-
-elif page == "📈 Model Performance":
-
-    st.title(
-        "📈 Model Performance"
-    )
-
-
-    # -----------------------------------------------------
-    # COMPARISON TABLE
-    # -----------------------------------------------------
-
-    comparison = []
-
-    for name, result in (
-        metrics[
-            "results"
-        ].items()
-    ):
-
-        comparison.append({
-
-            "Model":
-                name,
-
-            "Accuracy":
-                round(
-                    result[
-                        "accuracy"
-                    ] * 100,
-                    2
-                )
-        })
-
-
-    comparison_df = pd.DataFrame(
-        comparison
-    )
-
-
-    st.subheader(
-        "🔄 Model Accuracy Comparison"
-    )
-
-    st.dataframe(
-        comparison_df,
-        use_container_width=True,
-        hide_index=True
-    )
-
-
-    # -----------------------------------------------------
-    # BAR CHART
-    # -----------------------------------------------------
-
-    st.bar_chart(
-        comparison_df.set_index(
-            "Model"
-        )
-    )
-
-
-    # -----------------------------------------------------
-    # CONFUSION MATRIX
-    # -----------------------------------------------------
-
-    st.markdown("---")
-
-    st.subheader(
-        "📊 Confusion Matrix"
-    )
-
-
-    selected_model = st.selectbox(
-        "Select Model",
-        list(
-            metrics[
-                "results"
-            ].keys()
-        )
-    )
-
-
-    cm = metrics[
-        "results"
-    ][
-        selected_model
-    ][
-        "confusion_matrix"
-    ]
-
-
-    fig, ax = plt.subplots()
-
-    ax.imshow(cm)
-
-    ax.set_title(
-        selected_model
-    )
-
-    ax.set_xlabel(
-        "Predicted"
-    )
-
-    ax.set_ylabel(
-        "Actual"
-    )
-
-
-    ax.set_xticks(
-        [0, 1]
-    )
-
-    ax.set_yticks(
-        [0, 1]
-    )
-
-    ax.set_xticklabels(
-        ["Fake", "Real"]
-    )
-
-    ax.set_yticklabels(
-        ["Fake", "Real"]
-    )
-
-
-    for i in range(2):
-
-        for j in range(2):
-
-            ax.text(
-                j,
-                i,
-                cm[i][j],
-                ha="center",
-                va="center"
-            )
-
-
-    st.pyplot(
-        fig
-    )
-
-
-    # -----------------------------------------------------
-    # CLASSIFICATION REPORT
-    # -----------------------------------------------------
-
-    st.subheader(
-        "📋 Classification Report"
-    )
-
-
-    report = metrics[
-        "results"
-    ][
-        selected_model
-    ][
-        "classification_report"
-    ]
-
-
-    report_df = pd.DataFrame(
-        report
-    ).transpose()
-
-
-    st.dataframe(
-        report_df.round(3),
-        use_container_width=True
-    )
-
-
-# =========================================================
-# HISTORY
-# =========================================================
-
-elif page == "🕒 Prediction History":
-
-    st.title(
-        "🕒 Prediction History"
-    )
-
-
+                st.info("Term-level explanations are unavailable for this model.")
+
+elif page == "Overview":
+    st.divider()
+    dataset = metrics["dataset"]
+    best_model = metrics["best_model"]
+    best_accuracy = metrics["results"][best_model]["accuracy"] * 100
+    st.subheader("Model at a glance")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Test accuracy", f"{best_accuracy:.2f}%")
+    col2.metric("Selected model", best_model)
+    col3.metric("Training records", f"{dataset['training_articles']:,}")
+    col4.metric("Held-out records", f"{dataset['testing_articles']:,}")
+    st.subheader("Raw source dataset")
+    chart_data = pd.DataFrame({"Label": ["Fake", "Real"], "Articles": [dataset["fake_articles"], dataset["real_articles"]]}).set_index("Label")
+    st.bar_chart(chart_data)
+    st.caption(f"Source files contain {dataset['fake_articles']:,} fake-labeled and {dataset['real_articles']:,} real-labeled rows. After cleaning and deduplication, {dataset['total_articles']:,} records were used.")
+    st.info("Accuracy can be inflated by duplicated or source-specific patterns. Test on newer, independent sources before relying on this model.")
+
+elif page == "Model performance":
+    st.divider()
+    st.subheader("Compare model results")
+    comparison = pd.DataFrame([
+        {
+            "Model": name,
+            "Accuracy": round(result["accuracy"] * 100, 2),
+            "Macro F1": round(result["classification_report"]["macro avg"]["f1-score"] * 100, 2),
+        }
+        for name, result in metrics["results"].items()
+    ]).sort_values("Accuracy", ascending=False)
+    left, right = st.columns([1.2, 1])
+    with left:
+        st.dataframe(comparison, use_container_width=True, hide_index=True)
+        st.bar_chart(comparison.set_index("Model")[["Accuracy", "Macro F1"]])
+    with right:
+        selected_model = st.selectbox("Inspect model", list(metrics["results"].keys()), index=list(metrics["results"].keys()).index(metrics["best_model"]))
+        result = metrics["results"][selected_model]
+        cm = result["confusion_matrix"]
+        fig, ax = plt.subplots(figsize=(5, 4))
+        fig.patch.set_facecolor("#17262E")
+        ax.set_facecolor("#17262E")
+        ax.imshow(cm, cmap="YlGnBu")
+        ax.set_title("Confusion matrix", pad=14, color="#EAF2F0")
+        ax.set_xlabel("Predicted label", color="#C4D5D2")
+        ax.set_ylabel("Actual label", color="#C4D5D2")
+        ax.tick_params(colors="#C4D5D2")
+        ax.set_xticks([0, 1])
+        ax.set_xticklabels(["Fake", "Real"])
+        ax.set_yticks([0, 1])
+        ax.set_yticklabels(["Fake", "Real"])
+        for row in range(2):
+            for col in range(2):
+                value = cm[row][col]
+                text_color = "#102027" if value < max(max(values) for values in cm) * 0.55 else "#FFFFFF"
+                ax.text(col, row, f"{value:,}", ha="center", va="center", color=text_color, fontweight="bold")
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        st.pyplot(fig, use_container_width=True)
+        plt.close(fig)
+    report = pd.DataFrame(metrics["results"][selected_model]["classification_report"]).transpose()
+    st.subheader("Class-level results")
+    st.dataframe(report.round(3), use_container_width=True)
+    st.caption("The evaluation uses the project's random train/test split. It does not measure robustness to time, source, or topic shifts.")
+
+else:
+    st.divider()
+    st.subheader("Recent analyses")
     if not st.session_state.history:
-
-        st.info(
-            "No predictions made yet."
-        )
-
+        st.info("Your analyses will appear here during this session.")
     else:
+        history_df = pd.DataFrame(st.session_state.history)
+        st.dataframe(history_df, use_container_width=True, hide_index=True)
+        csv = history_df.to_csv(index=False).encode("utf-8")
+        left, right = st.columns([1, 5])
+        with left:
+            st.download_button("Download CSV", csv, "signal-analysis-history.csv", "text/csv", use_container_width=True)
+        with right:
+            if st.button("Clear history", use_container_width=True):
+                st.session_state.history = []
+                st.rerun()
+        st.caption("History is stored temporarily in this browser session and is not sent to a database.")
 
-        history_df = pd.DataFrame(
-            st.session_state.history
-        )
-
-
-        st.dataframe(
-            history_df,
-            use_container_width=True,
-            hide_index=True
-        )
-
-
-        # -------------------------------------------------
-        # DOWNLOAD
-        # -------------------------------------------------
-
-        csv = history_df.to_csv(
-            index=False
-        ).encode("utf-8")
-
-
-        st.download_button(
-            "⬇️ Download History",
-            csv,
-            "prediction_history.csv",
-            "text/csv",
-            use_container_width=True
-        )
-
-
-        # -------------------------------------------------
-        # CLEAR
-        # -------------------------------------------------
-
-        if st.button(
-            "🗑️ Clear History"
-        ):
-
-            st.session_state.history = []
-
-            st.rerun()
-
-
-# =========================================================
-# FOOTER
-# =========================================================
-
-st.markdown("---")
-
-st.caption(
-    "📰 Fake News AI Detector | "
-    "Python • NLP • TF-IDF • Machine Learning • Streamlit"
-)
+st.divider()
+st.caption("FakeNewsTextClassifier · Always verify claims with reliable, independent sources")
